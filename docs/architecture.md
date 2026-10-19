@@ -41,7 +41,7 @@ everyone else gets a 403 at Google's edge) and a Google-managed certificate. Sig
 Two halves with different lifetimes, per environment:
 - `envs/<env>/edge` (Terraform, kept between sessions): the fixed IP, the certificate and its DNS check, the
   certificate map, the Cloud Armor policy, all named `chat-lab` in the environment's project. Its `dns_records` output
-  lists the two records in the liveinference.com zone in Route 53 (AWS profile `xinfer.ai`): an A record to the IP,
+  lists the two records to add in the hostname's DNS zone (this lab's is in Route 53): an A record to the IP,
   and a CNAME Google uses to issue and renew the certificate. It also keeps the chat data disk `chat-data` (see
   [chat-app.md](chat-app.md#the-chat-data)).
 - `apps/chat/edge/<env>` (Kubernetes, comes and goes with the cluster): a Kustomize overlay that adds the

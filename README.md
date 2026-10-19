@@ -25,13 +25,16 @@ The lab on one page, in diagrams: https://xinferai.github.io/gke-genai-serving/g
 
 ## Two environments
 
-| | main | production |
-|---|---|---|
-| Branch | `main`: testing, collecting changes, the checkpoint | `production`: changes only by pull request from `main` |
-| GCP project | `samwen-gke-lab-main` | `samwen-gke-lab` |
-| gcloud profile | `gke-lab-main` | `gke-lab` |
-| Terraform state | `gs://samwen-gke-lab-main-tfstate` | `gs://samwen-gke-lab-tfstate` |
-| Public address | https://chat-lab-main.liveinference.com | https://chat-lab.liveinference.com |
+`main` and `production` are the same lab twice. Each has its own of everything below, and its values are set only in
+the files listed:
+
+| Each environment has | Set in |
+|---|---|
+| a branch of its name: `main` for testing and collecting changes, `production` changed only by pull request from `main` | GitHub's branch rules ([docs/release-process.md](docs/release-process.md)) |
+| a GCP project | `envs/<env>/*/terraform.tfvars` (`project_id`), `apps/chat/env/<env>.yaml` (`dataDisk.project`) |
+| a gcloud profile | `lib/env.sh` |
+| a Terraform state bucket | `envs/<env>/*/versions.tf` |
+| a public hostname | `envs/<env>/edge/terraform.tfvars` (`hostname`), `apps/chat/env/<env>.yaml` (`WEBUI_URL`), `apps/chat/edge/<env>/` |
 
 ## Running it
 
