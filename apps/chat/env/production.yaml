@@ -1,0 +1,9 @@
+# production's own chat settings, read after apps/chat/values.yaml. Only what differs from main.
+extraEnvVars:
+  # The page is public at this address (apps/chat/edge/production).
+  - name: WEBUI_URL
+    value: https://chat-lab.liveinference.com
+
+# The project of the chat data disk chat-data (envs/production/edge), for its volume in values.yaml.
+dataDisk:
+  project: samwen-gke-lab

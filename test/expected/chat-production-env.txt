@@ -1,0 +1,13 @@
+API_KEYS_ALLOWED_ENDPOINTS=/api/models,/api/chat/completions
+DEFAULT_MODEL_PARAMS={"think": false}
+DEFAULT_MODELS=qwen3.5:9b
+ENABLE_API_KEYS_ENDPOINT_RESTRICTIONS=True
+ENABLE_API_KEYS=True
+ENABLE_OPENAI_API=False
+ENABLE_PERSISTENT_CONFIG=False
+ENABLE_SIGNUP=False
+ENABLE_WEBSOCKET_SUPPORT=False
+OLLAMA_BASE_URLS=http://chat-ollama.chat.svc.cluster.local:11434
+TASK_MODEL_PARAMS={"think": false}
+TASK_MODEL=qwen3.5:9b
+WEBUI_URL=https://chat-lab.liveinference.com

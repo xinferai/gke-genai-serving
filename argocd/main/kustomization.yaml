@@ -1,0 +1,16 @@
+# main's root app: watches branch main and keeps argocd/main/apps running. ./bootstrap main applies this.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base/root
+patches:
+  - target:
+      kind: Application
+      name: root
+    patch: |-
+      - op: replace
+        path: /spec/source/targetRevision
+        value: main
+      - op: replace
+        path: /spec/source/path
+        value: argocd/main/apps

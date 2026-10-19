@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Takes one environment's cluster down, or both side by side, leaving what envs/<env>/edge keeps (the
+# entrance: IP, certificate, Cloud Armor; and the chat data disk chat-data) for the next ./startup:
+#   ./teardown <main|production|both>
+# First it asks for the word to be typed again. It works from a fresh copy of GitHub's <env> branch
+# (lib/session.sh), because ./tf destroys only from that branch, identical to GitHub's. For each environment:
+# 1. Deletes the root app: Argo CD then removes everything it made, the Gateway (and with it the load
+#    balancer), the chat app and its model disk. The data disk's volume goes too, but it is Retain, so
+#    the disk itself stays. Waits up to 15 minutes for that.
+# 2. Waits for the load balancer to go (no forwarding rules), up to 15 minutes. A cluster destroyed
+#    while it is still there leaves it behind, still billing and holding on to the IP and certificate
+#    map, so if it does not go, nothing is destroyed.
+# 3. ./tf <env> cluster destroy.
+# 4. Removes this checkout's .kube/<env> (the next cluster has a new address), then checks that no
+#    disks are left behind but chat-data.
+# Each step prints how long it took. With both, each environment writes its own log in .logs/.
+# Errors are handled step by step (no set -e): the first failed step ends that environment's run.
+set -uo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/env.sh
+. "$here/lib/env.sh"
+# shellcheck source=lib/session.sh
+. "$here/lib/session.sh"
+targets="$(envs_for "${1:-}")" || exit 2
+
+# confirm <word>: the word must be typed again; anything else ends here, before anything is touched.
+confirm() {
+  local what answer
+  case "$1" in
+    both) what="both environments" ;;
+    *) what="the $1 environment" ;;
+  esac
+  printf 'This tears down %s: the cluster, its apps and the 40 GB model disk.\n' "$what" >&2
+  printf 'Staying: the entrance (IP, certificate, Cloud Armor) and the chat data disk chat-data (accounts, passwords, chats).\n' >&2
+  printf 'Type %s to go on: ' "$1" >&2
+  read -r answer || answer=""
+  [ "$answer" = "$1" ] || {
+    echo "Not torn down." >&2
+    exit 1
+  }
+}
+
+teardown_one() { # teardown_one <env> <copy>
+  local env="$1" copy="$2"
+  step "delete the root app: Argo CD removes the apps, the model disk and the load balancer" \
+    delete_root "$env" "$copy" &&
+    step "the load balancer is gone (no forwarding rules)" no_rules "$env" &&
+    step "terraform init, in the fresh copy" "$copy/tf" "$env" cluster init -input=false &&
+    step "destroy the cluster (about 10 minutes)" "$copy/tf" "$env" cluster destroy -auto-approve -input=false &&
+    step "remove this checkout's credentials (.kube/$env)" rm -rf "$here/.kube/$env" &&
+    step "no disks left behind (the chat data disk stays)" no_disks "$env"
+}
+
+delete_root() {
+  local clusters crd
+  clusters="$(gcloud container clusters list --filter=name=lab --format='value(name)')" || return 1
+  if [ -z "$clusters" ]; then
+    echo "No cluster: nothing in it to delete."
+    return 0
+  fi
+  crd="$("$2/k" "$1" get crd applications.argoproj.io --ignore-not-found -o name)" || return 1
+  if [ -z "$crd" ]; then
+    echo "Argo CD is not installed: no root app to delete."
+    return 0
+  fi
+  "$2/k" "$1" -n argocd delete application root --ignore-not-found --timeout=15m
+}
+
+# rules_look: no forwarding rules are left. Status 2 (stop trying) when gcloud cannot list them.
+rules_look() {
+  rules="$(gcloud compute forwarding-rules list --format='value(name)')" || return 2
+  [ -z "$rules" ]
+}
+no_rules() {
+  local status=0
+  rules=""
+  poll 60 rules_look || status=$?
+  case "$status" in
+    0) echo "No forwarding rules left." ;;
+    2)
+      echo "Stopped: gcloud could not list the forwarding rules (an expired login? In a terminal:"
+      echo "gcloud --configuration=$CLOUDSDK_ACTIVE_CONFIG_NAME auth login). The cluster is not destroyed."
+      ;;
+    *)
+      echo "Gave up after 15 minutes. The cluster is not destroyed: the load balancer would be left behind,"
+      echo "still billing. Still there:"
+      indent <<< "$rules"
+      echo "Look at the Gateway (./k $1 -n chat get gateway), then run ./teardown $1 again."
+      ;;
+  esac
+  return "$status"
+}
+
+# no_disks <env>: no disk is left behind but the chat data disk, which stays (modules/edge).
+no_disks() {
+  local disks others
+  disks="$(gcloud compute disks list --format='value(name,zone.basename())')" || return 1
+  if [ -n "$(awk -F'\t' '$1 == "chat-data"' <<< "$disks")" ]; then
+    echo "The chat data disk chat-data stays (accounts, passwords, chats)."
+  else
+    echo "Note: the chat data disk chat-data is not there, so ./startup $1 stops until ./tf $1 edge apply"
+    echo "makes a new, empty one."
+  fi
+  others="$(awk -F'\t' '$1 != "chat-data"' <<< "$disks")"
+  if [ -z "$others" ]; then
+    echo "No other disks."
+    return 0
+  fi
+  echo "Disks left behind, still billing:"
+  indent <<< "$others"
+  echo "Delete each: gcloud --configuration=$CLOUDSDK_ACTIVE_CONFIG_NAME compute disks delete <name> --zone <zone>"
+  return 1
+}
+
+confirm "$1"
+# shellcheck disable=SC2086  # targets is a list of words
+run_command teardown $targets

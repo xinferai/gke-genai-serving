@@ -1,0 +1,69 @@
+# Every pull request into production gets two checks, both required on the production branch (GitHub
+# ruleset):
+# - source-allowed: the source is this repository's main (a fork's branch named main is not). Every change
+#   reaches production through main and the main environment, urgent fixes included
+#   (docs/release-process.md, "An urgent fix": set main aside, fix, promote, bring back).
+# - source-has-production: main already has every change production has. Promotion merge commits are
+#   the only commits production has that main lacks, so merge commits are left out. With main the only
+#   source this holds by construction; the check guards against a main rewritten by force, or a
+#   production changed while a rule was off.
+# It runs on pull_request_target: GitHub then runs the default branch's copy of this file (main's; since
+# 2025-12-08 GitHub takes it from the default branch, whichever branch the pull request targets), so a
+# pull request cannot rewrite the checks that judge it (on pull_request, the copy in the pull request's
+# merge result would run). The checks are therefore only as safe as main is: whatever is merged into main
+# changes them. pull_request_target is safe here only because no code from the pull request runs: the
+# checkout keeps main's code, and the history check just reads the pull request's commits with git log.
+# Branch names and commit ids reach the scripts through environment variables, never pasted into them,
+# so a branch named like a shell command cannot run.
+name: into-production
+on:
+  pull_request_target:
+    branches: [production]
+permissions: {}
+jobs:
+  source-allowed:
+    runs-on: ubuntu-latest
+    steps:
+      - name: The pull request comes from main, in this repository
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          if [ "$HEAD_REPO" != "$BASE_REPO" ]; then
+            echo "This pull request comes from '$HEAD_REPO', not from $BASE_REPO. Only this repository's main may be"
+            echo "merged into production."
+            exit 1
+          fi
+          if [ "$HEAD_REF" = main ]; then
+            echo "From main: a promotion."
+          else
+            echo "This pull request comes from '$HEAD_REF'. Only main may be merged into production. For an"
+            echo "urgent fix while main holds work not yet promoted, set main aside first (docs/release-process.md, \"An urgent fix\")."
+            exit 1
+          fi
+  source-has-production:
+    runs-on: ubuntu-latest
+    # Reading the repository is all it needs; it changes nothing.
+    permissions:
+      contents: read
+    steps:
+      # v7.0.1, pinned to its commit id: a tag can be moved to other code, a commit id cannot.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0             # every branch's full history, so origin/production is there to compare
+          persist-credentials: false # the token is not left in the checkout's git settings
+      - name: The source branch has every change production has
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          missing="$(git log --no-merges --format='%h %s' "$HEAD_SHA..origin/production")"
+          if [ -n "$missing" ]; then
+            echo "production has changes this branch does not:"
+            echo "$missing"
+            echo "Every change reaches production through main, so production was changed outside a promotion"
+            echo "(while a rule was off), or main was rewritten. Check that these commits belong, then bring them"
+            echo "into main with a pull request from production, merged with a merge commit."
+            exit 1
+          fi
+          echo "This branch has every change production has."

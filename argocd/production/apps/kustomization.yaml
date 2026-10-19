@@ -1,0 +1,26 @@
+# production's apps: branch production, production's settings file, production's entrance.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base/apps
+patches:
+  - target:
+      kind: Application
+      name: chat
+    patch: |-
+      - op: replace
+        path: /spec/sources/0/helm/valueFiles/1
+        value: $values/apps/chat/env/production.yaml
+      - op: replace
+        path: /spec/sources/1/targetRevision
+        value: production
+  - target:
+      kind: Application
+      name: chat-edge
+    patch: |-
+      - op: replace
+        path: /spec/source/targetRevision
+        value: production
+      - op: replace
+        path: /spec/source/path
+        value: apps/chat/edge/production

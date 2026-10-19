@@ -1,0 +1,9 @@
+# Who may connect, the one setting kept off GitHub. Copy this file to access.tfvars (git ignores it) and put
+# your own public address in both lines, as /32 (curl -s https://checkip.amazonaws.com prints it).
+# ./tf hands both to Terraform; ./startup and ./teardown copy the file into their fresh copy of GitHub's branch.
+#   admin_cidr:    the only address range allowed to reach each cluster's control plane (./k, ./h)
+#   allowed_cidrs: the only address ranges Cloud Armor lets through to the chat page; others get a 403
+# If your address changes, kubectl times out and the page answers 403: update this file, then plan and apply
+# each environment's cluster (admin_cidr) and edge (allowed_cidrs) layers.
+admin_cidr    = "203.0.113.7/32"
+allowed_cidrs = ["203.0.113.7/32"]

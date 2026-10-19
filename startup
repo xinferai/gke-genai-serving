@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# Brings one environment, or both side by side, from nothing to the chat page answering over HTTPS:
+#   ./startup <main|production|both>
+# It works from a fresh copy of GitHub's <env> branch (lib/session.sh), so what comes up is exactly
+# what is on the branch. For each environment:
+# 1. What is kept between sessions (envs/<env>/edge) is there: the entrance's certificate is ACTIVE, and
+#    the chat data disk chat-data (accounts, passwords, chats) exists.
+# 2. Terraform plans the cluster, and it stops unless the plan only adds; then it applies that saved
+#    plan. A plan with nothing to add (the cluster is already up) skips the apply, so a run that
+#    failed further on can simply be run again.
+# 3. Fresh credentials: the new cluster has a new address, so this checkout's .kube/<env> goes.
+# 4. ./bootstrap <env>: Argo CD, which then installs the apps from GitHub.
+# 5. Waits for every Argo CD app to be Synced and Healthy (up to 25 minutes), then for the page to
+#    answer 200 over HTTPS (up to 15 minutes).
+# Each step prints how long it took. With both, each environment writes its own log in .logs/.
+# Errors are handled step by step (no set -e): the first failed step ends that environment's run.
+set -uo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/env.sh
+. "$here/lib/env.sh"
+# shellcheck source=lib/session.sh
+. "$here/lib/session.sh"
+targets="$(envs_for "${1:-}")" || exit 2
+
+startup_one() { # startup_one <env> <copy>
+  local env="$1" copy="$2" host zone
+  host="$(sed -n 's/^hostname *= *"\(.*\)"$/\1/p' "$copy/envs/$env/edge/terraform.tfvars")"
+  [ -n "$host" ] || { echo "No hostname in envs/$env/edge/terraform.tfvars."; return 1; }
+  zone="$(sed -n 's/^zone *= *"\(.*\)"$/\1/p' "$copy/envs/$env/edge/terraform.tfvars")"
+  [ -n "$zone" ] || {
+    echo "No zone in envs/$env/edge/terraform.tfvars on GitHub's $env: the branch is from before the chat data disk."
+    echo "Bring that change to $env first (for production: promote main), then ./tf $env edge apply from the $env branch."
+    return 1
+  }
+  step "the entrance's certificate is ACTIVE" certificate_active "$env" &&
+    step "the chat data disk chat-data is there" data_disk_there "$env" "$zone" &&
+    step "terraform init, in the fresh copy" "$copy/tf" "$env" cluster init -input=false &&
+    step "plan the cluster; go on only if the plan just adds" plan_adds_only "$env" "$copy" &&
+    step "apply the plan (about 12 minutes)" apply_plan "$env" "$copy" &&
+    step "fresh credentials for the new cluster" fresh_credentials "$env" "$copy" &&
+    step "./bootstrap $env: Argo CD, which installs the apps from GitHub" "$copy/bootstrap" "$env" &&
+    step "every app Synced and Healthy (about 5 minutes)" apps_ready "$env" "$copy" &&
+    step "https://$host/ answers 200" https_ok "$env" "$host"
+}
+
+certificate_active() {
+  local state
+  state="$(gcloud certificate-manager certificates describe chat-lab --location=global \
+    --format='value(managed.state)')" || state=""
+  if [ "$state" = ACTIVE ]; then
+    echo "The certificate chat-lab is ACTIVE."
+    return 0
+  fi
+  echo "The certificate chat-lab is ${state:-not there}, not ACTIVE. The entrance comes first: ./tf $1 edge plan"
+  echo "and apply from the $1 branch, then its two DNS records in Route 53 (docs/architecture.md, \"Public HTTPS\")."
+  return 1
+}
+
+# data_disk_there <env> <zone>: the disk that keeps the chat app's accounts and chats (modules/edge).
+# Without it the chat app would wait for it, and startup would give up after 25 minutes.
+data_disk_there() {
+  if gcloud compute disks describe chat-data --zone="$2" --format='value(name)' > /dev/null; then
+    echo "The chat data disk chat-data is there: accounts and chats carry on."
+    return 0
+  fi
+  echo "No chat data disk chat-data in $2 (or gcloud could not look). It comes with the entrance: ./tf $1 edge plan"
+  echo "and apply from the $1 branch (docs/chat-app.md)."
+  return 1
+}
+
+# plan_adds_only <env> <copy>: saves the plan as tfplan-startup, and fails if it would change or remove
+# anything. Sets adds, the number of resources it would add.
+plan_adds_only() {
+  local env="$1" copy="$2" changes others
+  "$copy/tf" "$env" cluster plan -input=false -out=tfplan-startup || return 1
+  changes="$("$copy/tf" "$env" cluster show -json tfplan-startup | jq -r '.resource_changes[]? |
+    (.change.actions | join("+")) as $a | select($a != "no-op" and $a != "read") | "\($a) \(.address)"')" ||
+    return 1
+  others="$(grep -v '^create ' <<< "$changes")"
+  if [ -n "$others" ]; then
+    echo "Stopped: the plan would change or remove what is already there, and startup only adds:"
+    indent <<< "$others"
+    echo "Look at it with ./tf $env cluster plan, and apply it by hand once it is understood."
+    return 1
+  fi
+  if [ -z "$changes" ]; then
+    adds=0
+    echo "Nothing to add: the cluster is already up."
+  else
+    adds="$(grep -c '^create ' <<< "$changes")"
+    echo "The plan adds $adds resources and changes nothing."
+  fi
+}
+
+apply_plan() {
+  if [ "$adds" -eq 0 ]; then
+    echo "Skipped: nothing to add."
+    return 0
+  fi
+  "$2/tf" "$1" cluster apply -input=false tfplan-startup
+}
+
+fresh_credentials() { rm -rf "$here/.kube/$1" && "$2/k" "$1" get nodes; }
+
+# apps_look <env> <copy>: every Argo CD app, root among them, is Synced and Healthy. Prints the apps
+# whenever they change, and "still waiting" every 5 minutes (20 looks) when they do not, so a stalled
+# wait shows. While not every app is ready, it also prints what holds them up (stall_reason), when that
+# changes and with each "still waiting".
+apps_look() {
+  local json now why
+  json="$("$2/k" "$1" -n argocd get applications -o json 2> /dev/null)" || json='{"items": []}'
+  now="$(jq -r '[.items[] | "\(.metadata.name) \(.status.sync.status // "?")/\(.status.health.status // "?")"] |
+    join(", ")' <<< "$json" 2> /dev/null)"
+  looks_quiet=$((looks_quiet + 1))
+  if [ "$now" != "$apps_seen" ]; then
+    say "  [$(took $((SECONDS - run_start)))] ${now:-no apps yet}"
+    apps_seen="$now"
+    looks_quiet=0
+  elif [ "$looks_quiet" -ge 20 ]; then
+    say "  [$(took $((SECONDS - run_start)))] still waiting: ${now:-no apps yet}"
+    looks_quiet=0
+    why_seen=""
+  fi
+  jq -e 'any(.items[]; .metadata.name == "root") and
+    all(.items[]; .status.sync.status == "Synced" and .status.health.status == "Healthy")' <<< "$json" \
+    > /dev/null 2>&1 && return 0
+  why="$(stall_reason "$1" "$2")"
+  if [ -n "$why" ] && [ "$why" != "$why_seen" ]; then
+    while IFS= read -r line; do say "    $line"; done <<< "$why"
+    if grep -q 'out of resources' <<< "$why"; then
+      say "    (Google has no free machines of that type in the zone right now; the autoscaler keeps trying.)"
+    fi
+    why_seen="$why"
+  fi
+  return 1
+}
+# stall_reason <env> <copy>: each pod that is not running, with its state and its latest warning of each
+# kind (newest last), one per line under it. Nothing when every pod runs, or when kubectl cannot look.
+stall_reason() {
+  local pods events
+  pods="$("$2/k" "$1" get pods -A -o json 2> /dev/null)" || return 0
+  [ -n "$pods" ] || return 0
+  events="$("$2/k" "$1" get events -A -o json 2> /dev/null)" || events=""
+  [ -n "$events" ] || events='{"items": []}'
+  jq -r --argjson ev "$events" '
+    [$ev.items[] | select(.type == "Warning" and .involvedObject.kind == "Pod")] as $warn |
+    .items[] |
+    select((.status.phase != "Running" and .status.phase != "Succeeded") or
+      any(.status.containerStatuses[]?; .state.waiting != null)) |
+    .metadata.namespace as $ns | .metadata.name as $n |
+    ([.status.containerStatuses[]? | .state.waiting.reason // empty] | first // null) as $waiting |
+    "\($ns)/\($n) \($waiting // .status.phase)",
+    ([$warn[] | select(.involvedObject.namespace == $ns and .involvedObject.name == $n)] |
+      group_by(.reason) | map(max_by(.lastTimestamp // .eventTime // "")) |
+      sort_by(.lastTimestamp // .eventTime // "") | .[] | "  \(.reason): \(.message | .[0:160])")
+  ' <<< "$pods" 2> /dev/null
+}
+apps_ready() {
+  apps_seen=""
+  why_seen=""
+  looks_quiet=0
+  poll 100 apps_look "$1" "$2" && return 0
+  echo "Gave up after 25 minutes: not every app is Synced and Healthy. If Ollama is Pending, Google may have"
+  echo "no L4 free, Spot or on-demand (docs/architecture.md, \"The model's GPU\"). Look: ./k $1 -n argocd get applications"
+  return 1
+}
+
+https_look() { [ "$(curl -s -o /dev/null -m 10 -w '%{http_code}' "https://$1/")" = 200 ]; }
+https_ok() {
+  poll 60 https_look "$2" && {
+    echo "https://$2/ answers 200."
+    return 0
+  }
+  echo "Gave up after 15 minutes: https://$2/ does not answer 200. The load balancer takes 5 to 10 minutes;"
+  echo "Cloud Armor lets in only allowed_cidrs in access.tfvars."
+  return 1
+}
+
+# shellcheck disable=SC2086  # targets is a list of words
+run_command startup $targets

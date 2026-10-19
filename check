@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Offline checks for the lab, both environments (main and production). Nothing here touches a cluster,
+# Google Cloud or GitHub; it downloads the Helm charts, the Google provider for Terraform, and the public
+# schemas for Argo CD, Gateway API and GKE objects.
+# Run before every push:   ./check
+# Needs terraform, helm, kubectl, yq, kubeconform and shellcheck:   brew install yq kubeconform shellcheck
+set -uo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+cd "$here" || exit 1
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+failed=0
+
+# check "<what is checked>" <command...>: prints PASS or FAIL, and on a failure the command's output.
+check() {
+  local what="$1" out
+  shift
+  if out="$("$@" 2>&1)"; then
+    printf 'PASS  %s\n' "$what"
+  else
+    printf 'FAIL  %s\n' "$what"
+    printf '%s\n' "$out" | sed 's/^/      /'
+    failed=1
+  fi
+}
+
+# shellcheck disable=SC2034  # read by the area files sourced below
+envs=(main production)
+# other <env>: the other environment.
+other() { if [ "$1" = main ]; then echo production; else echo main; fi; }
+
+repo=git@github.com:xinferai/gke-genai-serving.git
+schemas='https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+# Schema check that also rejects fields the schema does not know (a misspelt field is an error).
+strict() { kubeconform -strict -summary -schema-location default -schema-location "$schemas" "$@"; }
+
+# shellcheck source=test/checks/10-terraform.sh
+. test/checks/10-terraform.sh
+# shellcheck source=test/checks/20-chat.sh
+. test/checks/20-chat.sh
+# shellcheck source=test/checks/30-edge.sh
+. test/checks/30-edge.sh
+# shellcheck source=test/checks/40-argocd.sh
+. test/checks/40-argocd.sh
+# shellcheck source=test/checks/50-scripts.sh
+. test/checks/50-scripts.sh
+# shellcheck source=test/checks/60-github.sh
+. test/checks/60-github.sh
+# shellcheck source=test/checks/70-readme.sh
+. test/checks/70-readme.sh
+
+exit "$failed"

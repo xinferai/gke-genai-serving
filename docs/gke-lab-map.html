@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>GKE Lab Map</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column of figures, each drawing with its caption under it; cost and AWS tables at the end. */
+:root {
+  --bg: #f3f4f6; --panel: #ffffff; --fg: #1b2130; --muted: #5a6375; --line: #c8cdd6; --lane: #eceef2;
+  --kept: #0e7a6b; --kept-tint: #e2f3ef; --session: #b0570b; --session-tint: #fbefe2;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11141a; --panel: #1a1f28; --fg: #e4e8ef; --muted: #9aa3b3; --line: #343b48; --lane: #212733;
+    --kept: #43c7b0; --kept-tint: #15302b; --session: #f0a04b; --session-tint: #33251a; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11141a; --panel: #1a1f28; --fg: #e4e8ef; --muted: #9aa3b3; --line: #343b48; --lane: #212733;
+  --kept: #43c7b0; --kept-tint: #15302b; --session: #f0a04b; --session-tint: #33251a; color-scheme: dark;
+}
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 15px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 64px;
+}
+main { max-width: 1100px; margin: 0 auto; display: grid; gap: 52px; }
+header { display: grid; gap: 10px; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 0; }
+h1 { font-size: 32px; line-height: 1.15; font-weight: 600; letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
+h2 { font-size: 20px; font-weight: 600; margin: 0 0 14px; text-wrap: balance; }
+h3 { font-family: var(--mono); font-size: 14px; font-weight: 500; margin: 0 0 6px; }
+.lede { max-width: 70ch; color: var(--muted); margin: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 28px; font-size: 14px; color: var(--muted); }
+.sw { display: inline-block; width: 30px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-right: 8px; }
+.sw.kept { border: 2px solid var(--kept); background: var(--kept-tint); }
+.sw.session { border: 2px dashed var(--session); background: var(--session-tint); }
+figure { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.scroll { overflow-x: auto; padding: 18px 16px; }
+.scroll svg { display: block; width: 100%; min-width: 760px; height: auto; }
+figcaption { border-top: 1px solid var(--line); padding: 12px 16px 14px; color: var(--muted); font-size: 14px; }
+figcaption p { margin: 0; max-width: 84ch; }
+figcaption p + p { margin-top: 6px; }
+code { font-family: var(--mono); font-size: .92em; }
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px 36px; margin-top: 20px; }
+.steps > div { min-width: 0; }
+.steps ol { margin: 0; padding-left: 22px; }
+.steps li { margin: 5px 0; }
+.tbl { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; font-family: var(--mono); font-size: 13px; }
+footer { color: var(--muted); font-size: 13px; max-width: 84ch; }
+
+/* Diagrams: page tokens style the inline SVG, so both themes follow. */
+.dg { color: var(--fg); font-family: var(--mono); font-size: 12px; }
+.dg text { fill: currentColor; }
+.dg .s { fill: var(--muted); font-size: 11px; }
+.dg .b { font-family: var(--sans); font-weight: 600; font-size: 13px; }
+.dg .box { fill: var(--panel); stroke: var(--fg); stroke-width: 1.2; }
+.dg .kept { stroke: var(--kept); stroke-width: 2; fill: var(--kept-tint); }
+.dg .session { stroke: var(--session); stroke-width: 1.6; stroke-dasharray: 6 4; }
+.dg .tint { fill: var(--session-tint); }
+.dg .frame { fill: none; }
+.dg .lane { fill: var(--lane); stroke: var(--line); stroke-width: 1; }
+.dg .ln { stroke: var(--fg); stroke-width: 1.4; fill: none; }
+.dg .ramp { fill: var(--session-tint); stroke: var(--session); stroke-width: 1.4; stroke-dasharray: 6 4; }
+</style>
+</head>
+<body>
+
+<main>
+  <header>
+    <p class="eyebrow">xinferai/gke-genai-serving · 16 October 2026</p>
+    <h1>GKE Lab Map</h1>
+    <p class="lede">Two environments, <code>main</code> and <code>production</code>, each in its own Google Cloud project. Each one is a kept entrance plus a cluster that exists only while you use it.</p>
+    <div class="legend" aria-label="Legend">
+      <span><span class="sw kept"></span>Stays between sessions</span>
+      <span><span class="sw session"></span>Built by <code>./startup</code>, removed by <code>./teardown</code></span>
+    </div>
+  </header>
+
+  <section>
+    <h2>One environment, end to end</h2>
+    <figure>
+      <div class="scroll">
+        <svg class="dg" viewBox="0 0 1056 606" role="img" aria-label="A browser finds the fixed IP in Route 53 and connects over HTTPS to a load balancer that the Gateway makes from the cluster, using the kept IP, certificate and Cloud Armor policy. The load balancer sends the page to Open WebUI on the on-demand apps pool, which keeps its accounts and chats on the kept chat-data disk and asks Ollama on an L4 GPU, Spot first and on-demand when Google has no Spot L4, for answers. Argo CD on the system pool installs the apps from GitHub; the Kubernetes API is open only to your IP; Cloud NAT carries downloads out.">
+          <defs>
+            <marker id="m1" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+          </defs>
+
+          <rect class="box kept" x="16" y="40" width="140" height="64" rx="6"/>
+          <text class="b" x="86" y="66" text-anchor="middle">Route 53</text>
+          <text class="s" x="86" y="86" text-anchor="middle">name → fixed IP</text>
+
+          <rect class="box" x="16" y="210" width="140" height="64" rx="6"/>
+          <text class="b" x="86" y="236" text-anchor="middle">Browser</text>
+          <text class="s" x="86" y="256" text-anchor="middle">chat-lab-main</text>
+
+          <path class="ln" d="M86 210 V106" marker-end="url(#m1)"/>
+          <text class="s" x="94" y="162">1 look up</text>
+          <path class="ln" d="M156 242 H209" marker-end="url(#m1)"/>
+          <text class="s" x="182" y="234" text-anchor="middle">2 HTTPS</text>
+
+          <rect class="box session" x="210" y="110" width="210" height="220" rx="8"/>
+          <text class="b" x="224" y="134">Load balancer</text>
+          <text class="s" x="224" y="152">made by the Gateway</text>
+          <rect class="box kept" x="224" y="166" width="182" height="32" rx="5"/>
+          <text x="236" y="187">fixed IP chat-lab</text>
+          <rect class="box kept" x="224" y="208" width="182" height="32" rx="5"/>
+          <text x="236" y="229">certificate</text>
+          <rect class="box kept" x="224" y="250" width="182" height="32" rx="5"/>
+          <text x="236" y="271">Cloud Armor policy</text>
+          <text class="s" x="224" y="310">port 80 redirects to 443</text>
+
+          <path class="ln" d="M420 148 H526" marker-end="url(#m1)"/>
+          <text class="s" x="460" y="140" text-anchor="middle">HTTPRoute</text>
+
+          <rect class="box" x="210" y="364" width="210" height="56" rx="6"/>
+          <text class="b" x="315" y="388" text-anchor="middle">GitHub</text>
+          <text class="s" x="315" y="407" text-anchor="middle">branch main</text>
+          <path class="ln" d="M420 392 H526" marker-end="url(#m1)"/>
+          <text class="s" x="460" y="384" text-anchor="middle">watches</text>
+
+          <rect class="box" x="210" y="446" width="210" height="56" rx="6"/>
+          <text class="b" x="315" y="470" text-anchor="middle">Your Mac</text>
+          <text class="s" x="315" y="489" text-anchor="middle">./k ./tf ./startup</text>
+          <path class="ln" d="M420 473 H514" marker-end="url(#m1)"/>
+          <text class="s" x="458" y="465" text-anchor="middle">your IP only</text>
+
+          <rect class="box session frame" x="500" y="30" width="380" height="490" rx="10"/>
+          <text class="b" x="515" y="54">GKE cluster lab</text>
+          <text class="s" x="515" y="72">us-central1-a · nodes on private IPs</text>
+
+          <rect class="lane" x="515" y="86" width="350" height="110" rx="6"/>
+          <text class="s" x="853" y="104" text-anchor="end">apps · on-demand e2-standard-2</text>
+          <rect class="box" x="527" y="116" width="150" height="64" rx="6"/>
+          <text class="b" x="602" y="142" text-anchor="middle">Open WebUI</text>
+          <text class="s" x="602" y="162" text-anchor="middle">the chat page</text>
+
+          <path class="ln" d="M602 180 V242" marker-end="url(#m1)"/>
+          <text class="s" x="612" y="209">asks the model (only caller allowed)</text>
+
+          <rect class="lane" x="515" y="214" width="350" height="110" rx="6"/>
+          <text class="s" x="853" y="232" text-anchor="end">gpu-l4 · L4 on Spot, else on-demand</text>
+          <rect class="box" x="527" y="244" width="150" height="64" rx="6"/>
+          <text class="b" x="602" y="270" text-anchor="middle">Ollama</text>
+          <text class="s" x="602" y="290" text-anchor="middle">qwen3.5:9b</text>
+
+          <rect class="lane" x="515" y="342" width="350" height="88" rx="6"/>
+          <text class="s" x="853" y="360" text-anchor="end">system · on-demand e2-standard-2</text>
+          <rect class="box" x="527" y="368" width="150" height="48" rx="6"/>
+          <text class="b" x="602" y="397" text-anchor="middle">Argo CD</text>
+          <text class="s" x="690" y="397">installs the apps</text>
+
+          <rect class="box" x="515" y="446" width="350" height="54" rx="6"/>
+          <text class="b" x="527" y="468">Kubernetes API</text>
+          <text class="s" x="527" y="488">the control plane, public address</text>
+
+          <rect class="box kept" x="910" y="116" width="130" height="64" rx="6"/>
+          <text class="b" x="975" y="142" text-anchor="middle">chat-data</text>
+          <text class="s" x="975" y="162" text-anchor="middle">10 GB disk</text>
+          <path class="ln" d="M677 148 H909" marker-end="url(#m1)"/>
+          <text class="s" x="790" y="140" text-anchor="middle">mounts: accounts, chats</text>
+
+          <rect class="box session" x="910" y="244" width="130" height="64" rx="6"/>
+          <text class="b" x="975" y="270" text-anchor="middle">model disk</text>
+          <text class="s" x="975" y="290" text-anchor="middle">40 GB</text>
+          <path class="ln" d="M677 276 H909" marker-end="url(#m1)"/>
+          <text class="s" x="790" y="268" text-anchor="middle">mounts</text>
+
+          <path class="ln" d="M690 520 V547" marker-end="url(#m1)"/>
+          <text class="s" x="700" y="538">downloads: model, images</text>
+          <rect class="box session" x="600" y="548" width="180" height="48" rx="6"/>
+          <text class="b" x="690" y="568" text-anchor="middle">Cloud NAT</text>
+          <text class="s" x="690" y="586" text-anchor="middle">outbound only</text>
+        </svg>
+      </div>
+      <figcaption>
+        <p>Main's environment. Production's is the same in its own project, at chat-lab.liveinference.com.</p>
+        <p>The load balancer comes and goes with the cluster, because the Gateway makes it. But it plugs in the kept IP, certificate and Cloud Armor policy, so the address and certificate never change. Open WebUI keeps accounts and chats on <code>chat-data</code>, a disk outside the cluster, which is why they survive a teardown. The model disk does not: each startup downloads the model again.</p>
+      </figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>A session: what comes and goes</h2>
+    <figure>
+      <div class="scroll">
+        <svg class="dg" viewBox="0 0 1000 252" role="img" aria-label="Timeline of one environment. The kept row (IP, certificate, Cloud Armor policy, chat-data disk) exists the whole time at about 15 dollars a month. The session row (network, Cloud NAT, cluster, node pools, load balancer, apps, model disk) is built by ./startup in about 20 minutes, costs about 61 cents an hour while up, and is removed by ./teardown in about 11 minutes; before and after, nothing of it exists.">
+          <defs>
+            <marker id="m2" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+          </defs>
+
+          <text class="b" x="16" y="64">Kept</text>
+          <text class="s" x="16" y="82">envs/&lt;env&gt;/edge</text>
+          <rect class="box kept" x="200" y="40" width="780" height="52" rx="6"/>
+          <text x="216" y="62">fixed IP · certificate · Cloud Armor policy · chat-data disk</text>
+          <text class="s" x="216" y="81">about $15 a month per environment, all the time</text>
+
+          <text class="b" x="16" y="144">Session</text>
+          <text class="s" x="16" y="162">envs/&lt;env&gt;/cluster</text>
+          <text class="s" x="16" y="177">+ what Argo CD makes</text>
+          <text class="s" x="260" y="152" text-anchor="middle">nothing</text>
+          <polygon class="ramp" points="320,172 440,124 440,172"/>
+          <rect class="box session tint" x="440" y="124" width="350" height="48"/>
+          <text x="456" y="145">network, Cloud NAT, cluster, 3 node pools</text>
+          <text class="s" x="456" y="163">load balancer, Open WebUI, Ollama, model disk</text>
+          <polygon class="ramp" points="790,124 900,172 790,172"/>
+          <text class="s" x="940" y="152" text-anchor="middle">nothing</text>
+          <text class="s" x="615" y="194" text-anchor="middle">about $0.61 an hour while it is up</text>
+
+          <path class="ln" d="M200 220 H978" marker-end="url(#m2)"/>
+          <path class="ln" d="M320 214 V226 M440 214 V226 M790 214 V226 M900 214 V226"/>
+          <text class="s" x="380" y="242" text-anchor="middle">./startup, about 20 min</text>
+          <text class="s" x="615" y="242" text-anchor="middle">using it</text>
+          <text class="s" x="845" y="242" text-anchor="middle">./teardown, 11 min today</text>
+        </svg>
+      </div>
+      <figcaption>
+        <p>The kept row bills all month; the session row bills only while it exists. Between sessions nothing of the cluster is left, no disks either, except <code>chat-data</code>. Both commands work from a fresh copy of GitHub's branch for that environment, so what comes up is exactly what is merged.</p>
+      </figcaption>
+    </figure>
+    <div class="steps">
+      <div>
+        <h3>./startup &lt;env&gt;</h3>
+        <ol>
+          <li>Checks that the certificate is ACTIVE and <code>chat-data</code> exists. If not, it stops before building anything.</li>
+          <li>Plans the cluster and goes on only if the plan just adds.</li>
+          <li>Applies it: network, Cloud NAT, cluster, three pools (about 12 minutes).</li>
+          <li><code>./bootstrap</code> installs Argo CD.</li>
+          <li>Argo CD installs the apps from GitHub; it waits until every app is Synced and Healthy.</li>
+          <li>Waits for the page to answer 200 over HTTPS.</li>
+        </ol>
+      </div>
+      <div>
+        <h3>./teardown &lt;env&gt;</h3>
+        <ol>
+          <li>Asks you to type the environment's name again.</li>
+          <li>Deletes the root app: Argo CD removes the apps, the model disk and the load balancer.</li>
+          <li>Waits until no forwarding rules are left, so no load balancer is orphaned and still billing.</li>
+          <li>Destroys the cluster (about 10 minutes).</li>
+          <li>Checks that no disk is left behind except <code>chat-data</code>.</li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>How a change reaches production</h2>
+    <figure>
+      <div class="scroll">
+        <svg class="dg" viewBox="0 0 1000 392" role="img" aria-label="On GitHub a feature branch goes into main by pull request, squashed, once ./check passes; main goes into production by a promotion pull request, with a merge commit and two required checks. Argo CD in main's project follows branch main and Argo CD in production's project follows branch production, each within about three minutes. Terraform is applied from your Mac with ./tf main and ./tf production.">
+          <defs>
+            <marker id="m3" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+          </defs>
+
+          <text class="s" x="20" y="18">GitHub · xinferai/gke-genai-serving</text>
+          <rect class="box" x="20" y="30" width="200" height="78" rx="6"/>
+          <text class="b" x="120" y="56" text-anchor="middle">feature branch</text>
+          <text class="s" x="120" y="76" text-anchor="middle">e.g. apps-on-demand</text>
+          <text class="s" x="120" y="94" text-anchor="middle">./check must pass</text>
+
+          <rect class="box" x="330" y="30" width="200" height="78" rx="6"/>
+          <text class="b" x="430" y="56" text-anchor="middle">main</text>
+          <text class="s" x="430" y="76" text-anchor="middle">tested on main's cluster</text>
+          <text class="s" x="430" y="94" text-anchor="middle">only by pull request</text>
+
+          <rect class="box" x="720" y="30" width="200" height="78" rx="6"/>
+          <text class="b" x="820" y="56" text-anchor="middle">production</text>
+          <text class="s" x="820" y="76" text-anchor="middle">what chat-lab serves</text>
+          <text class="s" x="820" y="94" text-anchor="middle">only from main</text>
+
+          <path class="ln" d="M220 69 H329" marker-end="url(#m3)"/>
+          <text class="s" x="275" y="61" text-anchor="middle">pull request</text>
+          <text class="s" x="275" y="85" text-anchor="middle">squash</text>
+          <path class="ln" d="M530 69 H719" marker-end="url(#m3)"/>
+          <text class="s" x="625" y="61" text-anchor="middle">promotion pull request</text>
+          <text class="s" x="625" y="85" text-anchor="middle">merge commit, 2 checks</text>
+
+          <rect class="box frame" x="300" y="170" width="260" height="170" rx="8"/>
+          <text class="b" x="314" y="192">GKE lab main</text>
+          <text class="s" x="314" y="210">samwen-gke-lab-main</text>
+          <rect class="box" x="314" y="222" width="232" height="40" rx="5"/>
+          <text x="326" y="247">Argo CD in cluster lab</text>
+          <rect class="box" x="314" y="272" width="232" height="40" rx="5"/>
+          <text x="326" y="297">Terraform: cluster, edge</text>
+          <text class="s" x="314" y="330">chat-lab-main.liveinference.com</text>
+
+          <rect class="box frame" x="690" y="170" width="260" height="170" rx="8"/>
+          <text class="b" x="704" y="192">GKE lab</text>
+          <text class="s" x="704" y="210">samwen-gke-lab</text>
+          <rect class="box" x="704" y="222" width="232" height="40" rx="5"/>
+          <text x="716" y="247">Argo CD in cluster lab</text>
+          <rect class="box" x="704" y="272" width="232" height="40" rx="5"/>
+          <text x="716" y="297">Terraform: cluster, edge</text>
+          <text class="s" x="704" y="330">chat-lab.liveinference.com</text>
+
+          <path class="ln" d="M430 108 V221" marker-end="url(#m3)"/>
+          <text class="s" x="440" y="150">Argo CD pulls</text>
+          <text class="s" x="440" y="164">about every 3 min</text>
+          <path class="ln" d="M820 108 V221" marker-end="url(#m3)"/>
+          <text class="s" x="830" y="150">Argo CD pulls</text>
+          <text class="s" x="830" y="164">about every 3 min</text>
+
+          <rect class="box" x="20" y="262" width="220" height="60" rx="6"/>
+          <text class="b" x="130" y="286" text-anchor="middle">Your Mac</text>
+          <text class="s" x="130" y="306" text-anchor="middle">./tf runs Terraform</text>
+          <path class="ln" d="M240 292 H313" marker-end="url(#m3)"/>
+          <text class="s" x="276" y="284" text-anchor="middle">./tf main</text>
+          <path class="ln" d="M130 322 V372 H820 V313" marker-end="url(#m3)"/>
+          <text class="s" x="475" y="364" text-anchor="middle">./tf production, from branch production</text>
+        </svg>
+      </div>
+      <figcaption>
+        <p>A change runs on main's cluster before it reaches production. Each cluster's Argo CD follows its own branch, so a merge is the deploy: into <code>main</code> for main's cluster, the promotion pull request for production's. If a cluster is down, it picks the branch up at its next startup.</p>
+        <p>Terraform is the one part applied by hand. <code>./tf</code> applies only from the branch named after the environment, clean and identical to GitHub's. Today: #17, #18 and #19 went into main, and #20 promoted all three.</p>
+      </figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>What it costs</h2>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Part</th><th>When it bills</th><th>List price</th></tr></thead>
+        <tbody>
+          <tr><td>Kept part of one environment: idle fixed IP $7.30, Cloud Armor $7, <code>chat-data</code> $1</td><td>always</td><td class="num">≈ $15 / month</td></tr>
+          <tr><td>One running cluster: GPU node $0.42 on Spot ($0.71 on the on-demand fallback), two small nodes $0.13, load balancer, disks and NAT $0.06; the cluster fee is covered by GKE's free credit</td><td>during a session</td><td class="num">≈ $0.61 / hour</td></tr>
+          <tr><td>A second cluster at the same time adds its cluster fee, since the credit covers one</td><td>both up</td><td class="num">+ $0.10 / hour</td></tr>
+          <tr><td>Both environments up, as with <code>./startup both</code></td><td>during a session</td><td class="num">≈ $1.32 / hour</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>In AWS terms</h2>
+    <div class="tbl">
+      <table>
+        <thead><tr><th>Here, on Google Cloud</th><th>On AWS</th></tr></thead>
+        <tbody>
+          <tr><td>A project per environment</td><td>An account per environment</td></tr>
+          <tr><td>GKE cluster, in one zone</td><td>EKS cluster</td></tr>
+          <tr><td>Node pools <code>system</code>, <code>apps</code>, <code>gpu</code>, <code>gpu-ondemand</code></td><td>Managed node groups</td></tr>
+          <tr><td>Compute class <code>gpu-l4</code>: Spot pool first, on-demand pool when Spot runs out</td><td>Karpenter NodePool with spot and on-demand capacity types, or two node groups behind Cluster Autoscaler priority expander</td></tr>
+          <tr><td>Spot VMs</td><td>Spot Instances</td></tr>
+          <tr><td>Gateway, which makes a global external Application Load Balancer</td><td>Ingress, which makes an ALB through the AWS Load Balancer Controller</td></tr>
+          <tr><td>Certificate Manager certificate and certificate map</td><td>ACM certificate</td></tr>
+          <tr><td>Cloud Armor policy</td><td>AWS WAF web ACL</td></tr>
+          <tr><td>Persistent disk <code>chat-data</code> with a hand-made volume set to Retain</td><td>An EBS volume with a static PersistentVolume through the EBS CSI driver</td></tr>
+          <tr><td>Cloud NAT</td><td>NAT Gateway</td></tr>
+          <tr><td>Private nodes, with the Kubernetes API open only to your IP</td><td>Private subnets, with the EKS public endpoint limited to your CIDR</td></tr>
+          <tr><td>Terraform state in a Cloud Storage bucket per environment</td><td>Terraform state in an S3 bucket per account</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>Drawn from the repository's Terraform, Argo CD settings and chart values, and from today's runs. Prices are Google's list prices for us-central1, read from its price catalog on 16 October 2026; real charges appear in Billing, about a day late.</footer>
+</main>
+</body>
+</html>

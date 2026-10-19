@@ -1,0 +1,39 @@
+# The chat app: Open WebUI and Ollama, from the open-webui chart with our values from git: the shared
+# apps/chat/values.yaml, then the environment's own file, which the overlay names (argocd/<env>/apps),
+# together with the branch. Release name "chat" keeps the object names (chat-open-webui, chat-ollama)
+# that the entrance and the NetworkPolicy rely on.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: chat
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://helm.openwebui.com
+      chart: open-webui
+      targetRevision: 17.0.0
+      helm:
+        releaseName: chat
+        valueFiles:
+          - $values/apps/chat/values.yaml
+          - OVERLAY-MUST-SET
+        # The Ollama sub-chart ships a test pod for `helm test`; it is not part of the app.
+        skipTests: true
+    - repoURL: git@github.com:xinferai/gke-genai-serving.git
+      targetRevision: OVERLAY-MUST-SET
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: chat
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff: {duration: 30s, factor: 2, maxDuration: 5m}
+    syncOptions:
+      - CreateNamespace=true

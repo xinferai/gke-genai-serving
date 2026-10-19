@@ -1,0 +1,9 @@
+.terraform/
+tfplan*
+*.tfstate
+*.tfstate.*
+.kubeconfig
+.kube/
+gke_gcloud_auth_plugin_cache
+.logs/
+access.tfvars

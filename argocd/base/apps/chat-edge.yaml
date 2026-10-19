@@ -1,0 +1,30 @@
+# The public entrance: the environment's Kustomize folder apps/chat/edge/<env> (the Gateway that GKE
+# turns into the load balancer, the routes, the health check, the Cloud Armor attachment). The overlay
+# (argocd/<env>/apps) sets the folder and the branch. Its own app, so the entrance can be removed on
+# its own.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: chat-edge
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:xinferai/gke-genai-serving.git
+    targetRevision: OVERLAY-MUST-SET
+    path: OVERLAY-MUST-SET
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: chat
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff: {duration: 30s, factor: 2, maxDuration: 5m}
+    # If this app arrives before chat has made the namespace.
+    syncOptions:
+      - CreateNamespace=true

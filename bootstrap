@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Hands a new cluster to Argo CD, for one environment. Run once after ./tf <env> cluster apply;
+# running it again is safe.
+#   ./bootstrap <main|production>
+# 1. Installs Argo CD with Helm (chart argo-cd 10.10.5, which is Argo CD 3.5.5), settings in
+#    argocd/values.yaml, and waits until it is ready.
+# 2. Gives it read access to this repository with the environment's own deploy key. The key
+#    goes straight from its file into a Kubernetes Secret: never into git, Terraform state, or Helm
+#    (which would copy it into every release revision).
+# 3. Applies the environment's root app (argocd/<env>). Argo CD then installs everything else from
+#    GitHub, from the branch named after the environment: merge first, or it installs what was there
+#    before.
+# Designs: docs/superpowers/specs/2026-10-15-argocd-design.md and
+# docs/superpowers/specs/2026-10-15-two-environments-design.md
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/env.sh
+. "$here/lib/env.sh"
+use_env "${1:-}"
+# K and H can name stand-ins for ./k and ./h; test/bootstrap_test.sh uses that to run this
+# without a cluster.
+k="${K:-$here/k}"
+h="${H:-$here/h}"
+key="${ARGOCD_DEPLOY_KEY:-$HOME/.ssh/gke-genai-serving-argocd-$lab_env}"
+repo=git@github.com:$lab_repo.git
+
+if [ ! -s "$key" ]; then
+  cat >&2 <<EOF
+No deploy key at $key. Make it once on this Mac, then add its public half to GitHub (read-only),
+signed in to gh as the repository's owner:
+  ssh-keygen -t ed25519 -N '' -C 'argocd-lab-$lab_env read-only deploy key' -f $key
+  gh repo deploy-key add $key.pub --repo $lab_repo --title "argocd-lab-$lab_env (read-only)"
+EOF
+  exit 1
+fi
+
+"$h" "$lab_env" upgrade --install argocd argo-cd --repo https://argoproj.github.io/argo-helm --version 10.10.5 \
+  -n argocd --create-namespace -f "$here/argocd/values.yaml" --wait --timeout 10m
+
+# Made locally and applied, so a second run updates the secret instead of failing on it.
+"$k" "$lab_env" -n argocd create secret generic repo-gke-genai-serving \
+  --from-literal=type=git --from-literal=url="$repo" --from-file=sshPrivateKey="$key" \
+  --dry-run=client -o yaml |
+  "$k" "$lab_env" label --local -f - argocd.argoproj.io/secret-type=repository -o yaml |
+  "$k" "$lab_env" apply -f -
+
+"$k" "$lab_env" apply -k "$here/argocd/$lab_env"
+echo "Argo CD is installing $lab_env's apps from GitHub, branch $lab_env. Watch: ./k $lab_env -n argocd get applications -w"

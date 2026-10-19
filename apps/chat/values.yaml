@@ -1,0 +1,246 @@
+# Chat app for the lab: Open WebUI (the web page, CPU) talking to Ollama (the model server, GPU).
+# Chart: open-webui 17.0.0 from https://helm.openwebui.com, which installs Ollama as a sub-chart.
+# Install and use: see docs/chat-app.md.
+
+# --- Open WebUI: runs on the apps pool --------------------------------------------------
+
+nodeSelector:
+  pool: apps
+# The apps pool is tainted so only workloads that opt in land there.
+tolerations:
+  - key: workload
+    operator: Equal
+    value: apps
+    effect: NoSchedule
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    memory: 3Gi
+
+# The chart sets no readiness check, so Kubernetes called the page ready about 30 seconds
+# before it answered (2026-10-14) and sent it traffic it could not serve. /health/db answers
+# only once the app is up and can reach its database.
+readinessProbe:
+  httpGet:
+    path: /health/db
+    port: http
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Chats and users (accounts, passwords, API keys) are kept on the disk chat-data, which Terraform
+# keeps with the entrance (modules/edge) so that it outlives the cluster: they are still there after
+# ./teardown and ./startup. The chart makes no disk of its own (existingClaim); the volume and the
+# claim for that disk follow.
+persistence:
+  enabled: true
+  existingClaim: chat-data
+
+# The volume is the disk itself, by name, in the environment's project (dataDisk.project, from
+# apps/chat/env/<env>.yaml) and the cluster's zone, and of its size (10 GB, modules/edge). Retain: deleting the volume, as teardown does,
+# leaves the disk. The claim names the volume and no storage class, so it takes that volume, and the
+# cluster never makes a new, empty disk for it.
+extraResources:
+  - apiVersion: v1
+    kind: PersistentVolume
+    metadata:
+      name: chat-data
+    spec:
+      capacity:
+        storage: 10Gi
+      accessModes:
+        - ReadWriteOnce
+      persistentVolumeReclaimPolicy: Retain
+      storageClassName: ""
+      csi:
+        driver: pd.csi.storage.gke.io
+        volumeHandle: projects/{{ .Values.dataDisk.project }}/zones/us-central1-a/disks/chat-data
+        fsType: ext4
+      nodeAffinity:
+        required:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: topology.kubernetes.io/zone
+                  operator: In
+                  values:
+                    - us-central1-a
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: chat-data
+      namespace: chat
+    spec:
+      storageClassName: ""
+      volumeName: chat-data
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+  # Where Ollama runs: the node pool gpu (Spot) first, then gpu-ondemand (modules/platform) when
+  # Google has no Spot L4 free; the cluster autoscaler tries the next one at once. Never pools of
+  # GKE's own making. No move back to Spot mid-session: GKE would start the Spot node before
+  # stopping the on-demand one, two GPUs, and each project may hold one; the next ./startup tries
+  # Spot first again. When neither pool can get a machine, Ollama waits (Pending).
+  - apiVersion: cloud.google.com/v1
+    kind: ComputeClass
+    metadata:
+      name: gpu-l4
+    spec:
+      priorities:
+        - nodepools: [gpu]
+        - nodepools: [gpu-ondemand]
+      nodePoolAutoCreation:
+        enabled: false
+      activeMigration:
+        optimizeRulePriority: false
+      whenUnsatisfiable: DoNotScaleUp
+
+# Not needed for one copy of the page: no OpenAI connection, no pipelines server, and no
+# Redis for websockets (that is only for running several copies behind a load balancer).
+enableOpenaiApi: false
+
+# One model, the 9B, stays loaded on the GPU all the time and does everything: chats and the
+# page's background jobs (chat titles, tags, follow-up suggestions). Sam's call on 2026-10-14:
+# good enough for the exercises. Earlier that day the 27B was dropped (the L4 could not hold
+# it next to the 9B, and every switch meant a reload of 1 to 2.5 minutes), then the 2B that
+# ran the background jobs. With one model, a background job and a chat take turns on it.
+# ENABLE_PERSISTENT_CONFIG=False makes the page take these settings from this file on every
+# start, instead of from whatever was last saved in its admin screens.
+# Settings the same in every environment. The chart adds these after extraEnvVars, which
+# apps/chat/env/<env>.yaml sets to what differs per environment (a list set in a second values file
+# replaces the first file's list rather than adding to it, hence two lists).
+commonEnvVars:
+  - name: ENABLE_PERSISTENT_CONFIG
+    value: "False"
+  - name: DEFAULT_MODELS
+    value: qwen3.5:9b
+  - name: TASK_MODEL
+    value: qwen3.5:9b
+  # Qwen 3.5 "thinks" before answering unless told not to. On 2026-10-14 the 2B thought for
+  # 3,542 tokens (49 seconds) before a short chat answer, so the page looked stuck. Off by
+  # default for chats and for background jobs; a chat can still turn it on in its settings.
+  - name: DEFAULT_MODEL_PARAMS
+    value: '{"think": false}'
+  - name: TASK_MODEL_PARAMS
+    value: '{"think": false}'
+  # API keys for programs (Settings > Account > API keys). A key may call only the model
+  # list and chat completions, not the admin or user-management endpoints. Only admins can
+  # create keys unless users are given that permission.
+  - name: ENABLE_API_KEYS
+    value: "True"
+  - name: ENABLE_API_KEYS_ENDPOINT_RESTRICTIONS
+    value: "True"
+  - name: API_KEYS_ALLOWED_ENDPOINTS
+    value: /api/models,/api/chat/completions
+  # No one can create an account from the sign-in page; the admin adds users in the Admin Panel.
+  - name: ENABLE_SIGNUP
+    value: "False"
+
+pipelines:
+  enabled: false
+websocket:
+  enabled: false
+
+# --- Ollama: runs on the GPU pool --------------------------------------------------------
+
+ollama:
+  enabled: true
+  # The sub-chart's own default is Ollama 0.33.2 (August 2026); pin a current release for
+  # the newer Qwen models.
+  image:
+    tag: "0.40.3"
+  ollama:
+    gpu:
+      enabled: true
+      type: nvidia
+      number: 1
+
+  # Replaces the chart's own start script (its "models" settings are not used). When the pod
+  # starts, for each model in the list: download it (6.6 GB for the 9B the first time,
+  # nothing later), delete any other model from the disk, load it and send it one short
+  # question, then check that it is 100% on the GPU. The pod is not ready until all of that
+  # is done.
+  # - The short question is a warm-up: the first request after a start took 43 seconds on
+  #   the 9B (2026-10-14), so readiness waits for it instead of the first user.
+  # - The GPU check: Ollama falls back to the CPU without failing if the GPU is missing or
+  #   too full. If a model is not fully on the GPU, the script exits with an error,
+  #   Kubernetes restarts the container, and the pod never becomes ready on the CPU.
+  lifecycle:
+    postStart:
+      exec:
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -e
+            models="qwen3.5:9b"
+            until ollama ps >/dev/null 2>&1; do sleep 2; done
+            for m in $models; do ollama pull "$m" >/dev/null 2>&1; done
+            ollama list | awk 'NR>1 {print $1}' | while read -r m; do
+              echo " $models " | grep -q " $m " || ollama rm "$m"
+            done
+            for m in $models; do
+              ollama run --think=false "$m" "Reply with OK." >/dev/null 2>&1
+            done
+            for m in $models; do
+              ollama ps | grep "^$m " | grep -q "100% GPU" || {
+                echo "$m is not fully on the GPU:"; ollama ps; exit 1; }
+            done
+
+  # Only Open WebUI may call Ollama. Ollama has no login of its own, so without this any pod in
+  # the cluster could use the model directly and skip Open WebUI's accounts and API keys
+  # (flagged by a security review of the first commit, 2026-10-14). Dataplane V2 enforces it.
+  # Kubernetes never blocks a pod's own node, so health checks and kubectl port-forward still
+  # work.
+  extraObjects:
+    - apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: ollama-only-from-open-webui
+      spec:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/instance: chat
+            app.kubernetes.io/component: open-webui-ollama
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - podSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: chat
+                    app.kubernetes.io/component: open-webui
+            ports:
+              - protocol: TCP
+                port: 11434
+
+  # The compute class gpu-l4 (below, under extraResources) picks the machine: a Spot L4 if
+  # Google has one, else an on-demand one. No pool here: pinning one would stop the fallback.
+  # No tolerations here either: GKE adds the class's own, and the chart adds the one for
+  # nvidia.com/gpu (GKE's taint on GPU nodes) because the GPU is enabled above.
+  nodeSelector:
+    cloud.google.com/compute-class: gpu-l4
+
+  resources:
+    requests:
+      cpu: "2"
+      memory: 8Gi
+    limits:
+      memory: 12Gi
+
+  # Models live on their own disk, so a new pod or a new node does not download them again.
+  persistentVolume:
+    enabled: true
+    size: 40Gi
+
+  extraEnv:
+    # Never unload a model (the default unloads it 5 minutes after the last question).
+    - name: OLLAMA_KEEP_ALIVE
+      value: "-1"
+    # Not set: OLLAMA_NUM_PARALLEL. Tried at 2 on 2026-10-14, Ollama still started the
+    # models with one request at a time ("-np 1"), likely because they also read images.
+    # Two requests at once on the 9B therefore take turns.

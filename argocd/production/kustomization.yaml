@@ -1,0 +1,16 @@
+# production's root app: watches branch production and keeps argocd/production/apps running. ./bootstrap production applies this.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base/root
+patches:
+  - target:
+      kind: Application
+      name: root
+    patch: |-
+      - op: replace
+        path: /spec/source/targetRevision
+        value: production
+      - op: replace
+        path: /spec/source/path
+        value: argocd/production/apps

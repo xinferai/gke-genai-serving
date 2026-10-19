@@ -1,0 +1,382 @@
+#!/usr/bin/env bash
+# An urgent fix for production, one step at a time, as docs/release-process.md, "An urgent fix", describes it:
+#   ./hotfix
+# Run it, do what it says, and run it again: each time it reads from GitHub where the fix stands and
+# goes on from there. It prints every command it runs, in full, before running it ("+ ..."), and asks
+# for "yes" before anything that changes GitHub or an environment: a push, a pull request, a merge, an
+# apply, a deletion. Any other answer stops it, and the next run picks up where it stopped.
+# - main has nothing production lacks: the fix goes straight through main (a short-lived branch,
+#   ./check, a pull request, a test on the main environment), then main is promoted.
+# - main holds work not yet promoted: it asks whether that work ships now, or is set aside:
+#   1-2. the bookmark main-deferred, then a pull request returning main's files to production's; the
+#        Terraform roots the set-aside work changed are applied from main, so the main environment
+#        matches production (main's cluster root only if the cluster is up);
+#   3. the fix, as above;  4. promote;
+#   5. bring back: a pull request reverting the set-aside, the same roots applied again, and the
+#      bookmark deleted.
+# It works in this checkout, which must have nothing uncommitted.
+set -uo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+cd "$here" || exit 1
+# shellcheck source=lib/env.sh
+. "$here/lib/env.sh"
+
+aside_subject="Set aside, for an urgent fix: main's files return to production's"
+
+# --- Printing, asking, stopping --------------------------------------------------------------------
+# quote <word>: as it would have to be typed, so a printed command can be pasted back as it is.
+quote() {
+  case "$1" in
+    '' | *[!A-Za-z0-9_./:=@%+,^-]*) printf "'%s'" "${1//\'/\'\\\'\'}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+# show <command...>: prints the command, in full, after "+ ".
+show() {
+  local a line="+"
+  for a in "$@"; do line+=" $(quote "$a")"; done
+  printf '%s\n' "$line"
+}
+run() { show "$@" && "$@"; }
+# get <variable> <command...>: prints the command, then puts its output in the variable.
+get() {
+  local -n into="$1"
+  shift
+  show "$@"
+  # shellcheck disable=SC2034  # into names the caller's variable
+  into="$("$@")"
+}
+say() { printf '%s\n' "$@"; }
+stop() {
+  say "$@" "Stopped. Run ./hotfix again to go on from here."
+  exit 1
+}
+answer=""
+# ask <prompt>: one line from the terminal, in $answer (empty when there is no more input).
+ask() {
+  printf '%s' "$1"
+  IFS= read -r answer || answer=""
+  [ -t 0 ] || echo
+}
+# confirm <what will happen>: goes on only on "yes".
+confirm() {
+  ask "$1 Type yes to go on: "
+  [ "$answer" = yes ] || stop "Not done: $1"
+}
+
+# --- Pull requests ---------------------------------------------------------------------------------
+# open_pr <variable> <base> <head>: the number of the open pull request from head into base, or nothing.
+open_pr() {
+  get "$1" gh pr list --base "$2" --head "$3" --state open --json number --jq '.[0].number // empty'
+}
+# new_pr <variable> <base> <head> <title> <body>: opens it, and puts its number in the variable.
+new_pr() {
+  local -n number="$1"
+  local url
+  get url gh pr create --base "$2" --head "$3" --title "$4" --body "$5" || stop "The pull request was not opened."
+  # shellcheck disable=SC2034  # number names the caller's variable
+  number="${url##*/}"
+}
+# push_and_pr <variable> <head> <title> <body>: pushes the current branch as head, if GitHub does not
+# have it as it is, and opens its pull request into main, if none is open; asks once for both.
+push_and_pr() {
+  local -n pr_number="$1"
+  local head="$2" remote local_sha
+  get remote git rev-parse -q --verify "refs/remotes/origin/$head"
+  get local_sha git rev-parse HEAD
+  open_pr pr_number main "$head"
+  [ "$remote" != "$local_sha" ] || [ -z "$pr_number" ] || return 0
+  confirm "Push $head to GitHub and open its pull request into main."
+  if [ "$remote" != "$local_sha" ]; then run git push -u origin "$head" || stop "The push failed."; fi
+  [ -n "$pr_number" ] || new_pr pr_number main "$head" "$3" "$4"
+}
+# merge_pr <pr> <--squash or --merge>: merges it on GitHub with this checkout's commit email (the one git
+# puts on your own commits) as the merge commit's author. Without --author-email GitHub uses the
+# account's setting: its primary email unless "Keep my email addresses private" is on, and this
+# repository is public. With it, a merge GitHub will not make under that email fails and stops here.
+merge_pr() {
+  local ident
+  get ident git var GIT_AUTHOR_IDENT || stop "No commit email in this checkout: set git config user.email."
+  ident="${ident#*<}"
+  run gh pr merge "$1" "$2" --author-email "${ident%%>*}"
+}
+# merge_into_main <pr> <what it does>: a squash merge, like every pull request into main.
+merge_into_main() {
+  confirm "Merge pull request #$1 into main (squash): $2"
+  merge_pr "$1" --squash || stop "The merge failed."
+  on_main
+}
+# on_main: this checkout on main, as GitHub has it (./tf applies only from there).
+on_main() {
+  run git fetch --prune origin || stop "Could not fetch from GitHub."
+  run git switch main || stop "Could not switch to main."
+  run git merge --ff-only origin/main || stop "This checkout's main has commits GitHub's main lacks."
+}
+
+# --- The steps -------------------------------------------------------------------------------------
+# start_fix: step 3's start, a short-lived branch off main.
+start_fix() {
+  local name found
+  say "Next: the fix, on a short-lived branch off main."
+  ask "Name the fix branch (lowercase letters, digits and -), or press Enter to stop: "
+  name="$answer"
+  if [ -z "$name" ]; then
+    say "No fix branch made."
+    exit 0
+  fi
+  ! steps_own "$name" || stop "$name is taken by the urgent-fix steps; choose another name."
+  [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || stop "'$name' is not a usable name: lowercase letters, digits and -."
+  get found git for-each-ref --format='%(refname:short)' "refs/heads/$name" "refs/remotes/origin/$name"
+  [ -z "$found" ] || stop "A branch $name exists already; choose another name."
+  run git switch -c "$name" origin/main || stop "Could not make the branch."
+  say "Make the fix here and commit it (./hotfix runs ./check before the push). Then run ./hotfix again."
+}
+
+# steps_own <branch>: one of the branches the steps make or use themselves.
+steps_own() {
+  case "$1" in main | production | main-deferred | set-aside* | bring-back*) return 0 ;; esac
+  return 1
+}
+# step_branches: the set-aside and bring-back branches of this fix, named after the bookmark (sets
+# aside_branch and back_branch), so they never meet an earlier fix's branches left on GitHub.
+step_branches() {
+  local short
+  get short git rev-parse --short=7 origin/main-deferred || stop "No bookmark main-deferred on GitHub."
+  aside_branch="set-aside-$short"
+  back_branch="bring-back-$short"
+}
+
+# is_fix_branch <branch>: a short-lived branch of the fix: not one of the steps' own, with commits main lacks.
+is_fix_branch() {
+  local n
+  [ -n "$1" ] || return 1
+  ! steps_own "$1" || return 1
+  get n git rev-list --count origin/main..HEAD
+  [ "$n" -gt 0 ]
+}
+
+# land_fix <branch>: step 3, the fix's pull request into main.
+land_fix() {
+  local b="$1" commits first title pr
+  get commits git log --format='  %h %s' origin/main..HEAD
+  say "The fix on $b:" "$commits"
+  run ./check || stop "./check failed: fix that, commit, and run ./hotfix again."
+  get first git rev-list --reverse origin/main..HEAD
+  get title git log -1 --format=%s "${first%%$'\n'*}"
+  push_and_pr pr "$b" "$title" "An urgent fix, through main (docs/release-process.md, An urgent fix)."
+  merge_into_main "$pr" "main's Argo CD deploys it within about 3 minutes, if main's cluster is up."
+  say "Test the fix on the main environment, https://chat-lab-main.liveinference.com (if main's cluster is down:" \
+    "./startup main)."
+}
+
+# promote [asked]: step 4, main into production. Asks first whether the fix passed, unless already asked.
+promote() {
+  local pr subject n i
+  if [ -z "${1:-}" ]; then
+    ask "Has the fix passed on the main environment? Type yes to promote main to production: "
+    [ "$answer" = yes ] || stop "Not promoted. Test it on the main environment, then run ./hotfix again."
+  fi
+  open_pr pr production main
+  if [ -z "$pr" ]; then
+    get subject git log -1 --format=%s origin/main
+    new_pr pr production main "Promote main to production: $subject" \
+      "The urgent fix, tested on the main environment (docs/release-process.md, An urgent fix)."
+  fi
+  # The two required checks take a few seconds to appear.
+  for i in $(seq 24); do
+    get n gh pr checks "$pr" --json name --jq length
+    [ "${n:-0}" -ge 2 ] && break
+    [ "$i" -lt 24 ] && sleep 5
+  done
+  run gh pr checks "$pr" --watch --interval 10 || stop "The checks on #$pr did not pass."
+  confirm "Merge pull request #$pr into production (merge commit): production's Argo CD deploys it within about 3 minutes, if production's cluster is up."
+  merge_pr "$pr" --merge || stop "The merge failed."
+  run git fetch --prune origin
+  run git diff --stat origin/production^2 origin/production
+  git diff --quiet origin/production^2 origin/production || say "Note: production's files differ from what main had."
+}
+
+# roots_of: from changed paths (one per line on its input), the Terraform roots they belong to, once
+# each (docs/release-process.md, step 2): envs/main/<root>/ is that root, modules/edge/ is edge, any other module cluster.
+roots_of() {
+  local f
+  while IFS= read -r f; do
+    case "$f" in
+      envs/main/*/*) f="${f#envs/main/}" && echo "${f%%/*}" ;;
+      modules/edge/*) echo edge ;;
+      modules/*) echo cluster ;;
+    esac
+  done | awk 'NF && !seen[$0]++'
+}
+# apply_roots <why>: plans each of those roots from main, and applies a plan that changes something.
+apply_roots() {
+  local why="$1" files list r up status root_list
+  get files git diff --name-only origin/production origin/main-deferred -- envs/main modules
+  list="$(roots_of <<< "$files")"
+  if [ -z "$list" ]; then
+    say "The work set aside changes no Terraform: nothing to apply."
+    return 0
+  fi
+  say "Terraform roots the work set aside changes, applied from main $why:" "$list"
+  on_main
+  use_env main
+  # A for loop, not "while read": the questions inside must read the terminal, not this list.
+  mapfile -t root_list <<< "$list"
+  for r in "${root_list[@]}"; do
+    if [ "$r" = cluster ]; then
+      get up gcloud container clusters list --filter=name=lab --format='value(name)'
+      if [ -z "$up" ]; then
+        say "main's cluster is down: its root is not applied (./startup main builds it from main as it is)."
+        continue
+      fi
+    fi
+    status=0
+    run ./tf main "$r" plan -input=false -detailed-exitcode -out=tfplan-hotfix < /dev/null || status=$?
+    case "$status" in
+      0) say "main's $r: no changes." ;;
+      2)
+        confirm "Apply this plan to main's $r."
+        run ./tf main "$r" apply -input=false tfplan-hotfix < /dev/null || stop "The apply failed."
+        ;;
+      *) stop "The plan for main's $r failed." ;;
+    esac
+    rm -f "envs/main/$r/tfplan-hotfix" "envs/main/$r/tfplan-hotfix.commit"
+  done
+}
+
+# set_aside: steps 1 and 2.
+set_aside() {
+  confirm "Save main as it is now on GitHub, as the bookmark main-deferred."
+  run git push origin origin/main:refs/heads/main-deferred || stop "The bookmark was not saved."
+  run git fetch --prune origin || stop "Could not fetch from GitHub."
+  set_aside_pr
+}
+# set_aside_pr: from the bookmark, the commit returning main's files to production's, its pull
+# request, the merge, and the roots.
+set_aside_pr() {
+  local branch list pr
+  step_branches
+  get branch git branch --show-current
+  if [ "$branch" != "$aside_branch" ]; then
+    get list git log --no-merges --format='- %h %s' origin/production..origin/main-deferred
+    run git switch -c "$aside_branch" origin/main-deferred || stop "Could not make the branch $aside_branch (is there one already?)."
+    run git restore --source=origin/production --staged --worktree :/ || stop "Could not take production's files."
+    run git commit -m "$aside_subject" -m "$list" || stop "Nothing to commit: are main's files production's already?"
+  fi
+  run git diff --stat origin/production HEAD
+  git diff --quiet origin/production HEAD || stop "$aside_branch's files are not production's."
+  get list git log --no-merges --format='- %h %s' origin/production..origin/main-deferred
+  push_and_pr pr "$aside_branch" "$aside_subject" \
+    "Sets main aside for an urgent fix (docs/release-process.md, An urgent fix); main-deferred keeps this work:"$'\n'"$list"
+  merge_into_main "$pr" "main's files become production's; main's Argo CD deploys that within about 3 minutes."
+  run git diff --stat origin/production origin/main
+  git diff --quiet origin/production origin/main || stop "main's files are not production's: was something else merged?"
+  apply_roots "so the main environment matches production"
+  start_fix
+}
+
+# bring_back <set-aside commit>: step 5.
+bring_back() {
+  local aside="$1" branch head_subject pr
+  say "Production has the fix. Next: bring back the work set aside."
+  step_branches
+  get branch git branch --show-current
+  get head_subject git log -1 --format=%s HEAD
+  if [ "$branch" != "$back_branch" ] || [[ "$head_subject" != 'Revert "Set aside, for an urgent fix'* ]]; then
+    run git switch -c "$back_branch" origin/main || stop "Could not make the branch $back_branch (is there one already?)."
+    run git revert --no-edit "$aside" || stop "The revert conflicts: the fix changed the same lines as the work set" \
+      "aside. Resolve the files git lists, git add them, git revert --continue, then run ./hotfix again."
+    get head_subject git log -1 --format=%s HEAD
+  fi
+  run git diff --stat origin/main-deferred HEAD
+  say "Above: how main will differ from the bookmark. That should be the fix, and nothing else."
+  push_and_pr pr "$back_branch" "$head_subject" \
+    "Brings back the work set aside for the urgent fix (docs/release-process.md, An urgent fix)."
+  merge_into_main "$pr" "the work set aside returns to main; main's Argo CD deploys it within about 3 minutes."
+  finish_aside
+}
+# finish_aside: the roots again, then the bookmark goes.
+finish_aside() {
+  apply_roots "so the main environment runs the work set aside again"
+  say "Start the test the fix interrupted over, on the main environment."
+  confirm "Delete the bookmark main-deferred on GitHub (its commits are all in main's history)."
+  run git push origin --delete main-deferred || stop "The bookmark was not deleted."
+  say "Done: production has the fix, and main has the work set aside back."
+}
+
+# --- Where the fix stands --------------------------------------------------------------------------
+straight() { # no bookmark: main has not been set aside
+  local branch unpromoted
+  get branch git branch --show-current
+  if is_fix_branch "$branch"; then
+    land_fix "$branch"
+    promote
+    say "Done: production has the fix."
+    return 0
+  fi
+  get unpromoted git log --no-merges --format='  %h %s' origin/production..origin/main
+  if [ -z "$unpromoted" ]; then
+    say "main has nothing that production lacks: the fix goes straight through main."
+    start_fix
+    return 0
+  fi
+  say "main has work production does not have yet:" "$unpromoted"
+  ask "Type promote if it has passed on the main environment and can ship now (the fix with it), aside to set it aside for the fix, anything else to stop: "
+  case "$answer" in
+    promote)
+      promote asked
+      say "Done: production has everything on main."
+      ;;
+    aside) set_aside ;;
+    *) stop "Nothing changed." ;;
+  esac
+}
+set_aside_on_main() { # the bookmark is saved: where the set-aside, the fix and the bring-back stand
+  local candidates aside subject reverted n branch
+  get candidates git rev-list --reverse --topo-order --ancestry-path origin/main-deferred..origin/main
+  aside="${candidates%%$'\n'*}"
+  if [ -z "$aside" ]; then
+    [ "$(git rev-parse origin/main)" = "$(git rev-parse origin/main-deferred)" ] ||
+      stop "main has moved since the bookmark main-deferred was saved, and the set-aside is not on main:" \
+        "something else was merged meanwhile. Sort it out by hand (docs/release-process.md, An urgent fix)."
+    say "The bookmark main-deferred is saved; next, the set-aside."
+    set_aside_pr
+    return 0
+  fi
+  get subject git log -1 --format=%s "$aside"
+  [[ "$subject" == "Set aside, for an urgent fix"* ]] ||
+    stop "main has moved since the bookmark main-deferred was saved: the first commit after it is not the" \
+      "set-aside but \"$subject\". Something else was merged first; sort it out by hand (docs/release-process.md, An urgent fix)."
+  get reverted git log --format=%s "$aside..origin/main" --grep='^Revert "Set aside, for an urgent fix'
+  if [ -n "$reverted" ]; then
+    finish_aside
+    return 0
+  fi
+  get branch git branch --show-current
+  if is_fix_branch "$branch"; then
+    land_fix "$branch"
+    promote
+    bring_back "$aside"
+    return 0
+  fi
+  get n git rev-list --count "$aside..origin/main"
+  if [ "$n" -eq 0 ]; then
+    say "main is set aside; its files are production's."
+    apply_roots "so the main environment matches production"
+    start_fix
+  elif ! git merge-base --is-ancestor origin/main origin/production; then
+    promote
+    bring_back "$aside"
+  else
+    bring_back "$aside"
+  fi
+}
+
+get dirty git status --porcelain
+[ -z "$dirty" ] || stop "This checkout has uncommitted changes; commit or stash them first:" "$dirty"
+run git fetch --prune origin || stop "Could not fetch from GitHub."
+if get bookmark git rev-parse -q --verify refs/remotes/origin/main-deferred; then
+  set_aside_on_main
+else
+  straight
+fi

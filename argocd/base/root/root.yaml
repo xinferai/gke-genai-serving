@@ -1,0 +1,29 @@
+# The root app, shared by both environments: keeps the environment's apps folder (argocd/<env>/apps,
+# on the branch named after the environment) running. Its overlay, argocd/<env>, sets both; the
+# placeholder below makes a missing overlay value fail loudly instead of tracking a default branch.
+# ./bootstrap <env> applies argocd/<env>; Argo CD makes the rest from git. Deleting it removes
+# everything the apps made (the finalizer), which is how a session ends: docs/operations.md, "End of a session".
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: git@github.com:xinferai/gke-genai-serving.git
+    targetRevision: OVERLAY-MUST-SET
+    path: OVERLAY-MUST-SET
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    # Automated sync does not try a failed sync again for the same commit unless told to.
+    retry:
+      limit: 5
+      backoff: {duration: 30s, factor: 2, maxDuration: 5m}
