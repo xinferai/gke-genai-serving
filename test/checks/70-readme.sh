@@ -9,7 +9,7 @@ docs_current() {
   local want stale
   for want in './tf main cluster plan' './bootstrap main' './k main get nodes' './check' 'delete application root' \
     'replicaCount: 0' 'ollama.replicaCount' "switch off automatic sync on \`root\`" 'never squash' \
-    'apps/chat/env/<env>.yaml' '.kube/<env>/config' 'chat-lab-main.liveinference.com' 'set `main` aside' \
+    'apps/chat/env/<env>.yaml' '.kube/<env>/config' 'Each environment has' 'set `main` aside' \
     'always promotable' 'into-production.yml' 'source-allowed' 'source-has-production' 'main-deferred' \
     'git restore --source=origin/production --staged --worktree :/' \
     'git rev-list --reverse --topo-order --ancestry-path origin/main-deferred..origin/main | head -1' 'never force-push' \

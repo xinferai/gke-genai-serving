@@ -8,7 +8,7 @@ branches drift apart) → production. Urgent fixes too (below). After each promo
 origin/production` prints nothing: production runs exactly the files the main environment tested. The promotion merge
 commit is only on `production`, so the two branch tips are never the same commit, and `production` is never merged
 into `main`: `git log --first-parent origin/production` lists every promotion, and each one's `^2` is the commit it
-brought in. Where each environment lives (GCP project, Terraform state, address): the table in the
+brought in. What each environment has, and the files that set it: the table in the
 [README](../README.md#two-environments).
 
 GitHub enforces it: no direct pushes to either branch, and two required checks (`.github/workflows/into-production.yml`)
